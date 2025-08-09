@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import '../models/song.dart';
 
 class MusicApiService {
-  static const String baseUrl = 'http://localhost:3000'; // thay bằng IP backend thực tế khi build mobile
+  static const String baseUrl = 'http://localhost:8789'; // thay bằng IP backend thực tế khi build mobile
 
   static Future<List<Song>> getAllSongs() async {
     final response = await http.get(Uri.parse('$baseUrl/songs'));

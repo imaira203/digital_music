@@ -1,12 +1,12 @@
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
-import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import 'package:just_audio/just_audio.dart';
 
 class PlayerProvider with ChangeNotifier {
   final AudioPlayer audioPlayer = AudioPlayer();
-  final YoutubeExplode yt = YoutubeExplode();
 
-  List<String> _queue = [];
+  List<Map<String, dynamic>> _queue = [];
+  List<Map<String, dynamic>> get queue => _queue;
+
   int _currentIndex = 0;
 
   String? thumbnailUrl;
@@ -14,8 +14,20 @@ class PlayerProvider with ChangeNotifier {
   String? artist;
   bool isPlaying = false;
 
-  Future<void> play(List<String> videoIdList, {int startIndex = 0}) async {
-    _queue = videoIdList;
+  int get currentIndex => _currentIndex;
+
+  PlayerProvider() {
+    // Lắng nghe trạng thái phát nhạc một lần duy nhất
+    audioPlayer.playerStateStream.listen((state) async {
+      if (state.processingState == ProcessingState.completed) {
+        await playNext();
+      }
+    });
+  }
+
+  /// Nhận queue từ backend (list các object {audioUrl, title, artist, mimeType, ...})
+  Future<void> play(List<Map<String, dynamic>> items, {int startIndex = 0}) async {
+    _queue = items;
     _currentIndex = startIndex;
     await _playCurrent();
   }
@@ -23,23 +35,25 @@ class PlayerProvider with ChangeNotifier {
   Future<void> _playCurrent() async {
     if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
 
-    final id = _queue[_currentIndex];
-    final video = await yt.videos.get(id);
-    final manifest = await yt.videos.streamsClient.getManifest(id);
-    final audio = manifest.audioOnly.withHighestBitrate();
+    final current = _queue[_currentIndex];
+    final audioUrl = current['audioUrl'];
+    if (audioUrl == null) return;
 
-    thumbnailUrl = video.thumbnails.standardResUrl;
-    title = video.title;
-    artist = video.author;
-    notifyListeners();
+    try {
+      title = current['title'];
+      artist = current['artist'];
+      thumbnailUrl = current['thumbnailUrl'];
+      notifyListeners();
 
-    await audioPlayer.stop();
-    await audioPlayer.play(UrlSource(audio.url.toString()));
-    isPlaying = true;
+      await audioPlayer.stop();
+      await audioPlayer.setUrl(audioUrl);
+      await audioPlayer.play();
 
-    audioPlayer.onPlayerComplete.listen((_) async {
-      await playNext();
-    });
+      isPlaying = true;
+      notifyListeners();
+    } catch (e) {
+      print("Error playing audio: $e");
+    }
   }
 
   Future<void> pause() async {
@@ -49,7 +63,7 @@ class PlayerProvider with ChangeNotifier {
   }
 
   Future<void> resume() async {
-    await audioPlayer.resume();
+    await audioPlayer.play();
     isPlaying = true;
     notifyListeners();
   }
@@ -73,17 +87,20 @@ class PlayerProvider with ChangeNotifier {
   }
 
   Future<void> playFirstInQueue() async {
-    _currentIndex = 0;
-    await _playCurrent();
+    if (_queue.isNotEmpty) {
+      _currentIndex = 0;
+      await _playCurrent();
+    }
   }
 
   Future<void> playLastInQueue() async {
-    _currentIndex = _queue.length - 1;
-    await _playCurrent();
+    if (_queue.isNotEmpty) {
+      _currentIndex = _queue.length - 1;
+      await _playCurrent();
+    }
   }
 
   void disposePlayer() {
     audioPlayer.dispose();
-    yt.close();
   }
 }
