@@ -1,35 +1,46 @@
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 
+
 class PlayerProvider with ChangeNotifier {
   final AudioPlayer audioPlayer = AudioPlayer();
 
-  List<Map<String, dynamic>> _queue = [];
-  List<Map<String, dynamic>> get queue => _queue;
+  final List<Map<String, dynamic>> _queue = [];
+  List<Map<String, dynamic>> get queue => List.unmodifiable(_queue);
 
   int _currentIndex = 0;
+  int get currentIndex => _currentIndex;
 
   String? thumbnailUrl;
   String? title;
   String? artist;
   bool isPlaying = false;
 
-  int get currentIndex => _currentIndex;
-
   PlayerProvider() {
-    // Lắng nghe trạng thái phát nhạc một lần duy nhất
     audioPlayer.playerStateStream.listen((state) async {
-      if (state.processingState == ProcessingState.completed) {
-        await playNext();
+    if (state.processingState == ProcessingState.completed) {
+      final moved = await playNext();
+      if (!moved) {
+        isPlaying = false;
+        notifyListeners();
       }
-    });
+    }
+  });
   }
 
-  /// Nhận queue từ backend (list các object {audioUrl, title, artist, mimeType, ...})
+  /// Phát danh sách từ đầu hoặc từ startIndex
   Future<void> play(List<Map<String, dynamic>> items, {int startIndex = 0}) async {
-    _queue = items;
+    _queue
+      ..clear()
+      ..addAll(items);
     _currentIndex = startIndex;
     await _playCurrent();
+  }
+
+  /// Thêm nhiều bài vào queue mà không ngắt nhạc đang phát
+  void addToQueue(List<Map<String, dynamic>> items) {
+    _queue.addAll(items);
+    notifyListeners();
   }
 
   Future<void> _playCurrent() async {
@@ -100,7 +111,9 @@ class PlayerProvider with ChangeNotifier {
     }
   }
 
-  void disposePlayer() {
+  @override
+  void dispose() {
     audioPlayer.dispose();
+    super.dispose();
   }
 }

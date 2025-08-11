@@ -6,6 +6,7 @@ import 'providers/music_provider.dart';
 import 'providers/player_provider.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(
     MultiProvider(
       providers: [
