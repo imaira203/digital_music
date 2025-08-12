@@ -6,9 +6,12 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:provider/provider.dart';
 
 import 'profile_screen.dart';
 import 'player_screen.dart';
+import '../widgets/now_playing_bar.dart';
+import '../providers/player_provider.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -31,13 +34,13 @@ class _HomeScreenState extends State<HomeScreen>
     return 'http://localhost:8789';
   }
 
-  Uri get _songsUri => Uri.parse('$_apiBase/songs');
+  Uri get _homeUri => Uri.parse('$_apiBase/songs');
 
   // --- State ---
   int _selectedIndex = 0;
-  late Future<List<dynamic>> _songsFuture;
+  late Future<List<Map<String, dynamic>>> _sectionsFuture;
 
-  // Danh sách videoId đã loại trùng (giữ thứ tự xuất hiện)
+  // Dùng để random nhanh, thu từ các item type SONG
   List<String> allVideoIds = [];
 
   // Chống double-tap khi push màn Player
@@ -57,7 +60,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
-    _songsFuture = fetchSongs();
+    _sectionsFuture = fetchHome();
   }
 
   @override
@@ -69,15 +72,15 @@ class _HomeScreenState extends State<HomeScreen>
   // Kéo-để-làm-mới
   Future<void> _refresh() async {
     setState(() {
-      _songsFuture = fetchSongs(force: true);
+      _sectionsFuture = fetchHome(force: true);
     });
-    await _songsFuture;
+    await _sectionsFuture;
   }
 
-  Future<List<dynamic>> fetchSongs({bool force = false}) async {
+  Future<List<Map<String, dynamic>>> fetchHome({bool force = false}) async {
     try {
       final response = await _client
-          .get(_songsUri, headers: {'Accept': 'application/json'})
+          .get(_homeUri, headers: {'Accept': 'application/json'})
           .timeout(const Duration(seconds: 30));
 
       if (response.statusCode != 200) {
@@ -85,32 +88,22 @@ class _HomeScreenState extends State<HomeScreen>
       }
 
       final decoded = jsonDecode(response.body);
-      final sections = _extractSections(decoded); // <- luôn trả List<dynamic>
+      final sections = _normalizeHomePayload(decoded); // [{title, contents: [...]}]
 
-      // Thu thập tất cả videoId từ ITEM type SONG, bỏ các section video/live
+      // Thu thập tất cả videoId từ ITEM type SONG
       final ids = LinkedHashSet<String>();
       for (final sec in sections) {
-        final section = (sec as Map?) ?? const {};
-        final title = section['title']?.toString() ?? '';
-        if (title == "Music videos for you" || title == "Live performances") {
-          continue;
-        }
-        final contents = section['contents'];
-        final List listContents =
-        contents is List ? contents : const <dynamic>[];
-
-        for (final raw in listContents) {
+        final contents = (sec['contents'] is List) ? sec['contents'] as List : const [];
+        for (final raw in contents) {
           final item = (raw as Map?) ?? const {};
           if (item['type'] == 'SONG') {
-            final vid = item['videoId']?.toString();
-            if (vid != null && vid.isNotEmpty) {
-              ids.add(vid);
-            }
+            final vid = (item['id'] ?? item['videoId'])?.toString();
+            if (vid != null && vid.isNotEmpty) ids.add(vid);
           }
         }
       }
-
       allVideoIds = ids.toList(growable: false);
+
       return sections;
     } on TimeoutException {
       throw Exception('Hết thời gian chờ');
@@ -119,26 +112,107 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  /// Chuẩn hoá mọi kiểu JSON trả về về List<dynamic> các "section"
+  /// Map payload Hydralerne ({picks, albums}) -> sections [{title, contents: [...] }]
+  List<Map<String, dynamic>> _normalizeHomePayload(dynamic decoded) {
+    // Nếu backend đã trả sẵn sections theo format cũ -> giữ nguyên
+    if (decoded is List) {
+      return decoded.whereType<Map<String, dynamic>>().toList();
+    }
+
+    final List<Map<String, dynamic>> sections = [];
+
+    if (decoded is Map) {
+      // picks -> SONG section
+      if (decoded['picks'] is List) {
+        final picks = (decoded['picks'] as List).whereType<Map>();
+        final contents = picks.map((p) {
+          final poster = (p['posterLarge'] ?? p['poster'])?.toString() ?? '';
+          return <String, dynamic>{
+            'type': 'SONG',
+            'id': p['id']?.toString(), // videoId
+            'title': p['title']?.toString() ?? '',
+            'artist': {'name': p['artist']?.toString() ?? ''},
+            'thumbnails': [
+              {'url': poster}
+            ],
+          };
+        }).toList();
+        sections.add({
+          'title': 'Picks for you',
+          'contents': contents,
+        });
+      }
+
+      // albums -> ALBUM section
+      if (decoded['albums'] is List) {
+        final albums = (decoded['albums'] as List).whereType<Map>();
+        final contents = albums.map((a) {
+          final poster = (a['posterLarge'] ?? a['poster'])?.toString() ?? '';
+          return <String, dynamic>{
+            'type': 'ALBUM',
+            'albumId': a['id']?.toString(),
+            'playlistId': a['playlistID']?.toString(),
+            'title': a['title']?.toString() ?? '',
+            'artist': {'name': a['artist']?.toString() ?? ''},
+            'thumbnails': [
+              {'url': poster}
+            ],
+          };
+        }).toList();
+        sections.add({
+          'title': 'Albums for you',
+          'contents': contents,
+        });
+      }
+    }
+
+    if (sections.isEmpty) {
+      // Fallback giữ nguyên extractor cũ
+      return _extractSections(decoded)
+          .map((e) => (e as Map).cast<String, dynamic>())
+          .toList();
+    }
+    return sections;
+  }
+
+  /// Chuẩn hoá format cũ -> List<dynamic> các "section"
   List<dynamic> _extractSections(dynamic decoded) {
     if (decoded is List) return decoded;
 
     if (decoded is Map) {
-      // Thử các key phổ biến như data/sections/items/contents
       for (final key in const ['sections', 'data', 'items', 'contents', 'result']) {
         final v = decoded[key];
         if (v is List) return v;
       }
-      // Trường hợp server trả một section đơn lẻ: { title, contents: [...] }
       final hasSectionShape =
           decoded.containsKey('title') && decoded.containsKey('contents');
       if (hasSectionShape) return [decoded];
     }
 
-    // Debug gợi ý dạng dữ liệu nhận về
     throw FormatException(
-      'Phản hồi /songs không đúng định dạng mong đợi: ${decoded.runtimeType}',
+      'Phản hồi /youtube/home không đúng định dạng mong đợi: ${decoded.runtimeType}',
     );
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchPlaylist(String playlistId) async {
+    final uri = Uri.parse('$_apiBase/youtube/playlist/$playlistId');
+    final res = await _client.get(uri, headers: {'Accept': 'application/json'});
+    if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
+    final data = jsonDecode(res.body);
+
+    // Kỳ vọng backend trả { id, title, songs: [{videoId,title,artist,thumbnailUrl}, ...] }
+    final List songs = (data['songs'] as List?) ?? const [];
+    return songs.map<Map<String, dynamic>>((e) {
+      final m = (e as Map).cast<String, dynamic>();
+      final vid = (m['videoId'] ?? m['id'])?.toString();
+      return {
+        'videoId': vid,
+        'title': m['title'] ?? m['name'] ?? '',
+        'artist': m['artist'] ?? (m['artistName'] ?? ''),
+        'thumbnailUrl': m['thumbnailUrl'] ?? (vid != null ? 'https://i.ytimg.com/vi/$vid/hq720.jpg' : ''),
+        // audioUrl sẽ được resolve khi phát
+      };
+    }).toList();
   }
 
   // UI lỗi có nút Retry
@@ -167,7 +241,7 @@ class _HomeScreenState extends State<HomeScreen>
             const SizedBox(height: 16),
             ElevatedButton.icon(
               onPressed: () => setState(() {
-                _songsFuture = fetchSongs(force: true);
+                _sectionsFuture = fetchHome(force: true);
               }),
               icon: const Icon(Icons.refresh),
               label: const Text('Thử lại'),
@@ -243,12 +317,8 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  Widget buildHomeTab(List<dynamic> sections) {
-    final filteredSections = sections
-        .where((s) =>
-    s['title'] != "Music videos for you" &&
-        s['title'] != "Live performances")
-        .toList();
+  Widget buildHomeTab(List<Map<String, dynamic>> sections) {
+    final filteredSections = sections; // có thể lọc thêm nếu muốn
 
     return RefreshIndicator(
       onRefresh: _refresh,
@@ -257,7 +327,7 @@ class _HomeScreenState extends State<HomeScreen>
         physics: const AlwaysScrollableScrollPhysics(),
         itemCount: filteredSections.length,
         itemBuilder: (context, index) {
-          final section = filteredSections[index] as Map;
+          final section = filteredSections[index];
           final title = section['title']?.toString() ?? '';
           final contents = (section['contents'] is List) ? section['contents'] as List : const [];
 
@@ -287,18 +357,20 @@ class _HomeScreenState extends State<HomeScreen>
                   itemBuilder: (context, idx) {
                     final item = (contents[idx] as Map?) ?? const {};
                     final type = item['type']?.toString();
-                    final name = item['name']?.toString() ?? '';
+                    final name = item['title']?.toString() ?? item['name']?.toString() ?? '';
                     final artistName =
                         (item['artist'] as Map?)?['name']?.toString() ?? '';
                     final thumbs = (item['thumbnails'] as List?) ?? const [];
                     final thumbUrl = thumbs.isNotEmpty
                         ? (thumbs.last as Map)['url']?.toString() ?? ''
                         : '';
-                    final videoId = item['videoId']?.toString();
+                    final videoId = (item['id'] ?? item['videoId'])?.toString();
                     final playlistId = item['playlistId']?.toString();
 
                     return GestureDetector(
                       onTap: () async {
+                        final provider = context.read<PlayerProvider>();
+
                         if (type == 'SONG') {
                           if (videoId == null || videoId.isEmpty) {
                             ScaffoldMessenger.of(context).showSnackBar(
@@ -307,46 +379,44 @@ class _HomeScreenState extends State<HomeScreen>
                             );
                             return;
                           }
-                          if (allVideoIds.isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                  content: Text('Chưa có danh sách phát')),
-                            );
-                            return;
-                          }
+                          // Phát 1 bài (radio mode: on)
+                          await provider.playSingleById(videoId);
 
-                          // Tạo sublist quanh bài chọn
-                          final songIndex = allVideoIds.indexOf(videoId);
-                          if (songIndex < 0) {
-                            // fallback: phát từ đầu danh sách
-                            await _safePush(PlayerScreen(
-                              videoIds: allVideoIds.take(10).toList(),
-                              startIndex: 0,
-                            ));
-                            return;
-                          }
-
-                          final start =
-                          (songIndex - 5).clamp(0, allVideoIds.length - 1);
-                          final end =
-                          (songIndex + 5).clamp(0, allVideoIds.length - 1);
-                          final subList = allVideoIds.sublist(start, end + 1);
-                          final newIndex = subList.indexOf(videoId);
-
+                          // Mở full player
                           await _safePush(
                             PlayerScreen(
-                              videoIds: subList,
-                              startIndex: newIndex,
+                              videoIds: [videoId],
+                              startIndex: 0,
                             ),
                           );
                         } else if (type == 'ALBUM' && playlistId != null) {
-                          // TODO: Gọi API playlist để lấy danh sách videoId thực tế
-                          if (!context.mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Tính năng ALBUM sẽ sớm có 👀'),
-                            ),
-                          );
+                          // Phát toàn bộ playlist (radio mode: off)
+                          try {
+                            final tracks = await _fetchPlaylist(playlistId);
+                            if (tracks.isEmpty) {
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Playlist chưa có bài hoặc backend chưa trả songs[]'),
+                                ),
+                              );
+                              return;
+                            }
+                            await provider.playPlaylist(tracks, startIndex: 0);
+                            await _safePush(
+                              PlayerScreen(
+                                videoIds: tracks
+                                    .map((e) => e['videoId'] as String)
+                                    .toList(),
+                                startIndex: 0,
+                              ),
+                            );
+                          } catch (e) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Lỗi tải playlist: $e')),
+                            );
+                          }
                         }
                       },
                       onLongPress: () {
@@ -360,13 +430,15 @@ class _HomeScreenState extends State<HomeScreen>
                                 ListTile(
                                   leading: const Icon(Icons.play_arrow),
                                   title: const Text('Phát ngay'),
-                                  onTap: () {
+                                  onTap: () async {
                                     Navigator.pop(context);
-                                    if (videoId != null &&
-                                        videoId.isNotEmpty) {
-                                      _safePush(PlayerScreen(
-                                          videoIds: [videoId],
-                                          startIndex: 0));
+                                    final provider = context.read<PlayerProvider>();
+                                    if (videoId != null && videoId.isNotEmpty) {
+                                      await provider.playSingleById(videoId);
+                                      if (context.mounted) {
+                                        _safePush(PlayerScreen(
+                                            videoIds: [videoId], startIndex: 0));
+                                      }
                                     }
                                   },
                                 ),
@@ -432,8 +504,8 @@ class _HomeScreenState extends State<HomeScreen>
         ],
       ),
       body: _selectedIndex == 0
-          ? FutureBuilder<List<dynamic>>(
-        future: _songsFuture,
+          ? FutureBuilder<List<Map<String, dynamic>>>(
+        future: _sectionsFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting &&
               !snapshot.hasData) {
@@ -448,49 +520,26 @@ class _HomeScreenState extends State<HomeScreen>
         },
       )
           : _tabsPlaceholder[_selectedIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: _onItemTapped,
-        selectedItemColor: Colors.redAccent,
-        unselectedItemColor: Colors.grey,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Trang chủ'),
-          BottomNavigationBarItem(icon: Icon(Icons.folder), label: 'Cục bộ'),
-          BottomNavigationBarItem(icon: Icon(Icons.favorite), label: 'Đã thích'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.queue_music), label: 'Danh sách'),
-          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Tài khoản'),
+      // Gộp NowPlayingBar + BottomNavigationBar (thay cho FAB)
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const NowPlayingBar(), // thanh thông tin bài đang phát
+          BottomNavigationBar(
+            currentIndex: _selectedIndex,
+            onTap: _onItemTapped,
+            selectedItemColor: Colors.redAccent,
+            unselectedItemColor: Colors.grey,
+            items: const [
+              BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Trang chủ'),
+              BottomNavigationBarItem(icon: Icon(Icons.folder), label: 'Cục bộ'),
+              BottomNavigationBarItem(icon: Icon(Icons.favorite), label: 'Đã thích'),
+              BottomNavigationBarItem(
+                  icon: Icon(Icons.queue_music), label: 'Danh sách'),
+              BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Tài khoản'),
+            ],
+          ),
         ],
-      ),
-      floatingActionButton: GestureDetector(
-        onLongPress: () {
-          // Long-press = Shuffle 10 bài
-          if (allVideoIds.isEmpty) return;
-          final take = allVideoIds.length >= 10 ? 10 : allVideoIds.length;
-          final list = List<String>.from(allVideoIds)..shuffle();
-          _safePush(
-            PlayerScreen(videoIds: list.take(take).toList(), startIndex: 0),
-          );
-        },
-        child: FloatingActionButton.extended(
-          tooltip: 'Nhấn giữ để phát ngẫu nhiên',
-          onPressed: () {
-            if (allVideoIds.isNotEmpty) {
-              _safePush(
-                PlayerScreen(
-                  videoIds: allVideoIds.take(10).toList(),
-                  startIndex: 0,
-                ),
-              );
-            } else {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Chưa có dữ liệu bài hát')),
-              );
-            }
-          },
-          icon: const Icon(Icons.play_arrow),
-          label: const Text('Phát'),
-        ),
       ),
     );
   }

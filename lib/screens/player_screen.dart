@@ -1,8 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import '../providers/player_provider.dart';
@@ -12,9 +10,9 @@ class PlayerScreen extends StatefulWidget {
   final int startIndex;
 
   const PlayerScreen({
-    required this.videoIds,
-    required this.startIndex,
     super.key,
+    required this.videoIds,
+    this.startIndex = 0,
   });
 
   @override
@@ -22,183 +20,99 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  int backPressed = 0;
-  DateTime? lastBackPress;
-  Duration _position = Duration.zero;
-  Duration _duration = Duration.zero;
-  List<Map<String, dynamic>> _tracks = [];
-  bool _loadingFirstTrack = true;
-
-  StreamSubscription<Duration>? _positionSub;
-  StreamSubscription<Duration?>? _durationSub;
-  Timer? _positionUpdateTimer;
+  Timer? _ticker;
+  Duration _pos = Duration.zero;
+  Duration _dur = Duration.zero;
 
   @override
   void initState() {
     super.initState();
-    // Chờ frame đầu để context/provider sẵn sàng
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _initPlayback();
-      _startPositionUpdater();
+    // Nếu vào Player mà queue trống -> phát bài đầu vào
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final p = context.read<PlayerProvider>();
+      if (p.queue.isEmpty && widget.videoIds.isNotEmpty) {
+        await p.playSingleById(widget.videoIds[widget.startIndex]);
+      }
     });
-  }
 
-  Future<void> _initPlayback() async {
-    final player = Provider.of<PlayerProvider>(context, listen: false);
-
-    final currentIds = player.queue
-        .map((e) => e['videoId'] as String?)
-        .whereType<String>()
-        .toList();
-
-    final sameList = _listEqualsOrdered(currentIds, widget.videoIds);
-
-    if (!sameList) {
-      // Danh sách mới khác hoàn toàn → fetch & play lại
-      _tracks.clear();
-      setState(() => _loadingFirstTrack = true);
-      await _fetchFirstTrackAndPlay();
-    } else {
-      // Danh sách giống nhau → không fetch nữa
-      setState(() => _loadingFirstTrack = false);
-
-      // Nhưng nếu startIndex khác thì nhảy tới bài tương ứng
-      if (player.currentIndex != widget.startIndex &&
-          widget.startIndex >= 0 &&
-          widget.startIndex < player.queue.length) {
-        // Cách đơn giản: dùng lại play() để set đúng bài (đổi URL, tiêu đề...)
-        await player.play(List<Map<String, dynamic>>.from(player.queue),
-            startIndex: widget.startIndex);
-      }
-    }
-  }
-
-  bool _listEqualsOrdered(List<String> a, List<String> b) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
-    }
-    return true;
-  }
-
-
-  /// Fetch bài đầu tiên và play ngay
-  Future<void> _fetchFirstTrackAndPlay() async {
-    try {
-      final firstTrack = await _fetchSingleTrack(widget.videoIds[widget.startIndex]);
-
+    _ticker = Timer.periodic(const Duration(milliseconds: 300), (_) {
+      final p = context.read<PlayerProvider>();
       setState(() {
-        _tracks.add(firstTrack);
-        _loadingFirstTrack = false;
+        _pos = p.audioPlayer.position;
+        _dur = p.audioPlayer.duration ?? Duration.zero;
       });
-
-      final player = Provider.of<PlayerProvider>(context, listen: false);
-      await player.play([firstTrack], startIndex: 0);
-
-      // Load các bài còn lại nền
-      final remainingIds = List<String>.from(widget.videoIds)
-        ..removeAt(widget.startIndex);
-      _fetchRemainingTracks(remainingIds);
-    } catch (e) {
-      print("Error: $e");
-    }
-  }
-
-  Future<Map<String, dynamic>> _fetchSingleTrack(String videoId) async {
-    final res = await http.get(
-      Uri.parse("http://localhost:8789/youtube/audio/$videoId"),
-    );
-    if (res.statusCode == 200) {
-      return jsonDecode(res.body);
-    }
-    throw Exception("Lỗi fetch bài đầu tiên: ${res.body}");
-  }
-
-  Future<void> _fetchRemainingTracks(List<String> ids) async {
-    if (ids.isEmpty) return;
-
-    final res = await http.post(
-      Uri.parse("http://localhost:8789/youtube/audio/batch"),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode({"videoIds": ids}),
-    );
-
-    if (res.statusCode == 200) {
-      final data = List<Map<String, dynamic>>.from(jsonDecode(res.body));
-      setState(() => _tracks.addAll(data));
-      // Cập nhật queue cho player nếu cần
-      final player = Provider.of<PlayerProvider>(context, listen: false);
-      player.addToQueue(data);
-    } else {
-      print("Lỗi fetch batch: ${res.body}");
-    }
-  }
-
-  void _startPositionUpdater() {
-    final player = Provider.of<PlayerProvider>(context, listen: false);
-
-    // Giảm tần suất update UI xuống mỗi 300ms
-    _positionUpdateTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
-      if (mounted) {
-        setState(() {
-          _position = player.audioPlayer.position;
-          _duration = player.audioPlayer.duration ?? Duration.zero;
-        });
-      }
     });
   }
 
   @override
   void dispose() {
-    _positionSub?.cancel();
-    _durationSub?.cancel();
-    _positionUpdateTimer?.cancel();
+    _ticker?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final player = Provider.of<PlayerProvider>(context);
-    final screenW = MediaQuery.of(context).size.width;
-    final w = (screenW * 0.9).clamp(280.0, 460.0);
+    final p = context.watch<PlayerProvider>();
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Now Playing')),
+      appBar: AppBar(
+        title: const Text('Now Playing'),
+        actions: [
+          IconButton(
+            tooltip: p.liked ? 'Bỏ thích' : 'Thích',
+            icon: Icon(p.liked ? Icons.favorite : Icons.favorite_border),
+            onPressed: () => p.toggleLike(),
+          ),
+          IconButton(
+            tooltip: 'Thêm vào danh sách',
+            icon: const Icon(Icons.playlist_add),
+            onPressed: () => _showAddToPlaylist(context),
+          ),
+          IconButton(
+            tooltip: 'Hàng chờ',
+            icon: const Icon(Icons.queue_music),
+            onPressed: () => _showQueue(context, p),
+          ),
+        ],
+      ),
       body: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: _loadingFirstTrack
-            ? _buildSkeletonUI()
-            : Column(
+        padding: const EdgeInsets.all(20),
+        child: Column(
           children: [
-            if (player.thumbnailUrl != null)
+            if ((p.thumbnailUrl ?? '').isNotEmpty)
               ClipRRect(
                 borderRadius: BorderRadius.circular(10),
                 child: CachedNetworkImage(
-                  imageUrl: player.thumbnailUrl!,
+                  imageUrl: p.thumbnailUrl!,
                   height: 250,
                   fit: BoxFit.cover,
-                  placeholder: (context, url) => Container(
-                    height: 250,
-                    width: w-15,
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade300,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                  ),
                 ),
               ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
             Text(
-              player.title ?? 'Loading...',
+              p.title ?? 'Đang phát…',
               style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             Text(
-              player.artist ?? '',
+              p.artist ?? '',
               style: const TextStyle(fontSize: 16, color: Colors.grey),
             ),
             const Spacer(),
+            Slider(
+              value: _pos.inSeconds.toDouble(),
+              max: _dur.inSeconds == 0 ? 1 : _dur.inSeconds.toDouble(),
+              onChanged: (v) => p.audioPlayer.seek(Duration(seconds: v.toInt())),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(_fmt(_pos)),
+                Text(_fmt(_dur)),
+              ],
+            ),
+            const SizedBox(height: 8),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -206,135 +120,121 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   icon: const Icon(Icons.skip_previous),
                   iconSize: 40,
                   onPressed: () async {
-                    // Tránh nhấn khi đang loading/buffering để khỏi giật
-                    final ps = player.audioPlayer.processingState;
+                    final ps = p.audioPlayer.processingState;
                     if (ps == ProcessingState.loading || ps == ProcessingState.buffering) return;
 
                     const threshold = Duration(seconds: 5);
-                    final pos = player.audioPlayer.position;
+                    final pos = p.audioPlayer.position;
 
                     if (pos > threshold) {
-                      await player.audioPlayer.seek(Duration.zero); // tua về đầu bài
+                      await p.audioPlayer.seek(Duration.zero);
                       return;
                     }
-
-                    // ≤ threshold: thử lùi bài
-                    final moved = await player.playPrevious();
-                    if (!moved) {
-                      // đang ở bài đầu -> chỉ restart bài hiện tại
-                      await player.audioPlayer.seek(Duration.zero);
+                    if (!await p.playPrevious()) {
+                      await p.audioPlayer.seek(Duration.zero);
                     }
                   },
                 ),
                 IconButton(
-                  icon: Icon(player.isPlaying ? Icons.pause : Icons.play_arrow),
+                  icon: Icon(p.isPlaying ? Icons.pause : Icons.play_arrow),
                   iconSize: 64,
-                  onPressed: () async {
-                    if (player.isPlaying) {
-                      await player.pause();
-                    } else {
-                      // Nếu queue hiện tại Không giống videoIds đầu vào -> phát lại theo danh sách mới
-                      final currentIds = player.queue
-                          .map((e) => e['videoId'] as String?)
-                          .whereType<String>()
-                          .toList();
-                      final sameList = _listEqualsOrdered(currentIds, widget.videoIds);
-
-                      if (sameList && player.queue.isNotEmpty) {
-                        await player.resume();
-                      } else if (_tracks.isNotEmpty) {
-                        await player.play(_tracks, startIndex: 0);
-                      } else {
-                        // Phòng trường hợp bấm quá sớm khi chưa fetch xong bài đầu
-                        await _fetchFirstTrackAndPlay();
-                      }
-                    }
-                  },
+                  onPressed: () => p.isPlaying ? p.pause() : p.resume(),
                 ),
                 IconButton(
                   icon: const Icon(Icons.skip_next),
                   iconSize: 40,
                   onPressed: () async {
-                    bool success = await player.playNext();
-                    if (!success) {
-                      await player.playFirstInQueue();
+                    if (!await p.playNext()) {
+                      await p.playFirstInQueue();
                     }
                   },
                 ),
               ],
             ),
-            const SizedBox(height: 20),
-            Slider(
-              value: _position.inSeconds.toDouble(),
-              max: _duration.inSeconds.toDouble().clamp(1.0, double.infinity),
-              onChanged: (value) {
-                player.audioPlayer.seek(Duration(seconds: value.toInt()));
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _fmt(Duration d) {
+    final m = d.inMinutes;
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  void _showQueue(BuildContext ctx, PlayerProvider p) {
+    showModalBottomSheet(
+      context: ctx,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: ListView.separated(
+          itemCount: p.queue.length,
+          separatorBuilder: (_, __) => const Divider(height: 1),
+          itemBuilder: (_, i) {
+            final it = p.queue[i];
+            final playing = i == p.currentIndex;
+            return ListTile(
+              leading: playing ? const Icon(Icons.equalizer) : const SizedBox.shrink(),
+              title: Text(it['title']?.toString() ?? ''),
+              subtitle: Text(it['artist']?.toString() ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+              onTap: () async {
+                Navigator.pop(ctx);
+                // Nhảy đến bài bất kỳ trong queue
+                if (i >= 0 && i < p.queue.length) {
+                  // cập nhật index & phát
+                  while (p.currentIndex < i) {
+                    final moved = await p.playNext();
+                    if (!moved) break;
+                  }
+                  while (p.currentIndex > i) {
+                    final moved = await p.playPrevious();
+                    if (!moved) break;
+                  }
+                }
               },
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  void _showAddToPlaylist(BuildContext ctx) {
+    final controller = TextEditingController();
+    showModalBottomSheet(
+      context: ctx,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                labelText: 'Tên playlist',
+                hintText: 'Ví dụ: Yêu thích',
+                border: OutlineInputBorder(),
+              ),
             ),
+            const SizedBox(height: 12),
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(_formatDuration(_position)),
-                Text(_formatDuration(_duration)),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () {
+                      context.read<PlayerProvider>().addToPlaylist(controller.text.trim());
+                      Navigator.pop(ctx);
+                    },
+                    child: const Text('Thêm vào playlist'),
+                  ),
+                ),
               ],
             ),
-          ],
+            const SizedBox(height: 8),
+          ]),
         ),
       ),
     );
-  }
-
-  Widget _buildSkeletonUI() {
-    final screenW = MediaQuery.of(context).size.width;
-    final w = (screenW * 0.9).clamp(280.0, 460.0);
-
-    return Align(
-      alignment: Alignment.topCenter, // chỉ căn giữa theo chiều ngang
-      child: Padding(
-        padding: const EdgeInsets.only(top: 16), // cách top nhẹ
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.center, // giữa ngang
-          children: [
-            Container(
-              height: 250,
-              width: w,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Container(
-              height: 24,
-              width: 200,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(6),
-              ),
-            ),
-            const SizedBox(height: 10),
-            Container(
-              height: 16,
-              width: 100,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(6),
-              ),
-            ),
-            const SizedBox(height: 24),
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-          ],
-        ),
-      ),
-    );
-  }
-
-
-  String _formatDuration(Duration duration) {
-    final minutes = duration.inMinutes;
-    final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
-    return '$minutes:$seconds';
   }
 }
