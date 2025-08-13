@@ -180,18 +180,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               subtitle: Text(it['artist']?.toString() ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
               onTap: () async {
                 Navigator.pop(ctx);
-                // Nhảy đến bài bất kỳ trong queue
-                if (i >= 0 && i < p.queue.length) {
-                  // cập nhật index & phát
-                  while (p.currentIndex < i) {
-                    final moved = await p.playNext();
-                    if (!moved) break;
-                  }
-                  while (p.currentIndex > i) {
-                    final moved = await p.playPrevious();
-                    if (!moved) break;
-                  }
-                }
+                await p.playQueueIndex(i);
               },
             );
           },

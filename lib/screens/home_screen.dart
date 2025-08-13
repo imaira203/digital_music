@@ -40,10 +40,8 @@ class _HomeScreenState extends State<HomeScreen>
   int _selectedIndex = 0;
   late Future<List<Map<String, dynamic>>> _sectionsFuture;
 
-  // Dùng để random nhanh, thu từ các item type SONG
   List<String> allVideoIds = [];
 
-  // Chống double-tap khi push màn Player
   bool _navigating = false;
 
   static const List<Widget> _tabsPlaceholder = <Widget>[
@@ -190,7 +188,7 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     throw FormatException(
-      'Phản hồi /youtube/home không đúng định dạng mong đợi: ${decoded.runtimeType}',
+      'Phản hồi không đúng định dạng mong đợi: ${decoded.runtimeType}',
     );
   }
 

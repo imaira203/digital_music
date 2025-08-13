@@ -175,6 +175,13 @@ class PlayerProvider with ChangeNotifier {
     }
   }
 
+  Future<void> playQueueIndex(int index) async {
+    if (_queue.isNotEmpty) {
+      _currentIndex = index;
+      await _playCurrent();
+    }
+  }
+
   Future<void> playLastInQueue() async {
     if (_queue.isNotEmpty) {
       _currentIndex = _queue.length - 1;
