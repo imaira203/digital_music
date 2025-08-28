@@ -1,29 +1,44 @@
 {
   "expo": {
-    "name": "NDigitalMusic",
-    "slug": "NDigitalMusic",
+    "jsEngine": "hermes",
+    "name": "Digital Music",
+    "slug": "DigitalMusic",
     "version": "1.0.0",
+    "package": "com.digitalmusic.app",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
-    },
-    "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+      "supportsTablet": true,
+      "jsEngine": "hermes",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
       },
-      "edgeToEdgeEnabled": true
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
+      "android": {
+        "package": "com.digitalmusic.app",
+        "adaptiveIcon": {
+          "foregroundImage": "./assets/icon.png",
+          "backgroundColor": "#ffffff"
+        },
+        "networkSecurityConfig": "@xml/network_security_config",
+        "usesCleartextTraffic": true,
+        "edgeToEdgeEnabled": true
+      },
+      "web": {
+        "favicon": "./assets/favicon.png"
+      },
+      "updates": {
+        "enabled": false
+      },
+      "plugins": []
     }
   }
 }
